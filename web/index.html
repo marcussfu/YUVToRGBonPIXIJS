@@ -1,0 +1,171 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+</head>
+
+<body>
+  <script type="text/javascript" src="pixi.min.js"></script>
+  <script type="text/javascript" src="jsmpeg.min.js"></script>
+  <script type="text/javascript">
+    
+    class yuvResource extends PIXI.resources.Resource {
+        constructor() {
+            super(256, 1);
+        }
+
+        upload(renderer, baseTexture, glTexture) {
+            const { width } = this; // default size or from baseTexture?
+            const { height } = this; // your choice.
+
+            baseTexture.format = PIXI.FORMATS.LUMINANCE;
+
+            this.renderer = renderer;
+            this.baseTexture = baseTexture;
+            const { gl } = renderer;
+            this.gl = gl;
+            
+            gl.texImage2D(baseTexture.target, 0, baseTexture.format, width, height, 0, baseTexture.format, baseTexture.type, this.data);
+            
+            return true;
+        }
+
+        setUint8Array(uArray) {
+            this.data = uArray;
+            this.baseTexture.update();
+            // this.bind(this.baseTexture);
+            // this.gl.texImage2D(this.baseTexture.target, 0, this.baseTexture.format, this.width, this.height, 0, this.baseTexture.format, this.baseTexture.type, this.data);
+            
+        }
+    }
+    
+
+    let type = "WebGL"
+    if(!PIXI.utils.isWebGLSupported()){
+      type = "canvas"
+    }
+
+    PIXI.utils.sayHello(type)
+
+    let w = 840;
+    let h = 500;
+
+    let app = new PIXI.Application({width: 960, height: 540});
+    app.renderer.backgroundColor = 0x45B8AC;
+    let gl = app.renderer.gl;
+
+    app.renderer.addSystem(PIXI.systems.TextureSystem);
+    app.renderer.texture.contextChange();
+    
+    document.body.appendChild(app.view);
+    
+    const geometry = new PIXI.Geometry();
+        geometry.addAttribute('aVertexPosition', [0, 0, w, 0, w, h, 0, h], 2);
+        geometry.addAttribute('aUvs', [0,0,1,0,1,1,0,1],2)
+        geometry.addIndex([0,1,2,0,2,3])
+
+    const vertexSrc = `
+      attribute vec2 aVertexPosition;
+      attribute vec2 aUvs;
+      uniform mat3 projectionMatrix;
+      uniform mat3 translationMatrix;
+      varying vec2 vUvs;
+      void main(void)
+      {
+          gl_Position = vec4((projectionMatrix * translationMatrix * vec3(aVertexPosition, 1.0)).xy, 0.0, 1.0);
+          vUvs = aUvs;
+      }`;
+
+    const fragmentSrc = `
+      precision mediump float;
+
+      varying vec2 vUvs;
+      uniform sampler2D ySampler;
+      uniform sampler2D uSampler;
+      uniform sampler2D vSampler;
+
+      void main(void)
+      {
+          vec4 c = vec4(texture2D(ySampler, vUvs).r - 16./255.) * 1.164;
+          vec4 u = vec4(texture2D(uSampler, vUvs).r - 128./255.);
+          vec4 v = vec4(texture2D(vSampler, vUvs).r - 128./255.);
+          c += v * vec4(1.596, -0.813, 0, 0);
+          c += u * vec4(0, -0.392, 2.017, 0);
+          c.a = 1.0;
+
+          gl_FragColor = c;
+          // gl_FragColor = texture2D(ySampler, vUvs);
+      }`;
+
+    let yResource = new yuvResource();
+    let uResource = new yuvResource();
+    let vResource = new yuvResource();
+
+    const yBaseTex = new PIXI.BaseTexture(yResource);
+    const uBaseTex = new PIXI.BaseTexture(uResource);
+    const vBaseTex = new PIXI.BaseTexture(vResource);
+
+    const yTex = new PIXI.Texture(yBaseTex);
+    const uTex = new PIXI.Texture(uBaseTex);
+    const vTex = new PIXI.Texture(vBaseTex);
+
+    const uniforms = {
+      ySampler: yTex,
+      uSampler: uTex,
+      vSampler: vTex,
+    };
+
+    const shader = PIXI.Shader.from(vertexSrc, fragmentSrc, uniforms);
+
+    const quad = new PIXI.Mesh(geometry, shader);
+    quad.position.set(100,0);
+
+    let url = 'ws://'+document.location.hostname+':8082/';
+    let player = new JSMpeg.Player(url, {});
+
+    player.video.onDecodeCallback = (evt) => _onVideoDecode(evt);
+    const _onVideoDecode = (evt) => {
+      // console.log(evt.instance.heapU8);
+      let renderWidth = evt.destination.width;
+      let renderHeight = evt.destination.height;
+      if (evt.instance.heapU8) {
+        let ptrY = player.video.functions._mpeg1_decoder_get_y_ptr(player.video.decoder);
+        let ptrCr = player.video.functions._mpeg1_decoder_get_cr_ptr(player.video.decoder);
+        let ptrCb = player.video.functions._mpeg1_decoder_get_cb_ptr(player.video.decoder);
+        let yData = player.video.instance.heapU8.subarray(ptrY, ptrY + player.video.codedSize);
+        let vData = player.video.instance.heapU8.subarray(ptrCr, ptrCr + (player.video.codedSize >> 2));
+        let uData = player.video.instance.heapU8.subarray(ptrCb, ptrCb + (player.video.codedSize >> 2));
+
+        yResource.resize(renderWidth, renderHeight);
+        yResource.setUint8Array(yData);
+        uResource.resize(renderWidth/2, renderHeight/2);
+        uResource.setUint8Array(uData);
+        vResource.resize(renderWidth/2, renderHeight/2);
+        vResource.setUint8Array(vData);
+      }
+    }
+
+    let pic = PIXI.Sprite.from(PIXI.Texture.from("sprite.png"));
+    pic.width = 180;
+    pic.height = 300;
+
+    let pic1 = PIXI.Sprite.from(PIXI.Texture.from("green.png"));
+    pic1.width = 200;
+    pic1.height = 200;
+    pic1.position.set(200, 200);
+
+    let pic2 = PIXI.Sprite.from(PIXI.Texture.from("koreafish.jpg"));
+    pic2.width = 200;
+    pic2.height = 200;
+    pic2.position.set(600, 300);
+
+    app.stage.addChild(pic);
+    
+    app.stage.addChild(quad);
+    app.stage.addChild(pic1);
+    // app.stage.addChild(pic2);
+
+    
+  </script>
+</body>
+</html>
